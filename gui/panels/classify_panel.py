@@ -18,7 +18,7 @@ class ClassifyPanel(ttk.Frame):
 
   def _build_ui(self):
     ttk.Label(
-      self, text="几何分类（薄壁件 / 实体件）", font=("", 12, "bold")
+      self, text="几何分类（薄壁件 / 中厚件 / 实体件）", font=("", 12, "bold")
     ).pack(anchor=tk.W, pady=(0, 10))
 
     opts_frame = ttk.LabelFrame(self, text="分类参数")
@@ -63,7 +63,11 @@ class ClassifyPanel(ttk.Frame):
       self.result_tree.insert(
         "", tk.END, values=(p.comp_id, p.name, "薄壁件", f"{p.ratio:.6f}")
       )
-    for p in result.solid_parts:
+    for p in result.mid_thick_parts:
+      self.result_tree.insert(
+        "", tk.END, values=(p.comp_id, p.name, "中厚件", f"{p.ratio:.6f}")
+      )
+    for p in result.thick_parts:
       self.result_tree.insert(
         "", tk.END, values=(p.comp_id, p.name, "实体件", f"{p.ratio:.6f}")
       )

@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from config.settings import CLASSIFY
+from config.settings import CLASSIFY, CLASSIFY_THREE_TIER
 from utils.logger import logger
 from utils.hw_api import (
   get_session,
@@ -40,9 +40,10 @@ class PartInfo:
 @dataclass
 class ClassifyResult:
   success: bool
-  thin_parts: list = field(default_factory=list)       # 可抽中面的薄壁件
+  thin_parts: list = field(default_factory=list)       # 可抽中面的薄壁件 (≤10mm)
   small_parts: list = field(default_factory=list)      # 微小件（可删除）
-  thick_solid_parts: list = field(default_factory=list) # 厚实体件（保留，tetra网格）
+  mid_thick_parts: list = field(default_factory=list)  # 中厚件 10-15mm (hex 3层)
+  thick_parts: list = field(default_factory=list)      # 厚实体件 ≥15mm (hex t/5层)
   unknown_parts: list = field(default_factory=list)
   message: str = ""
 
@@ -57,9 +58,12 @@ class GeometryClassifier:
     self.small_volume_ratio = 0.001     # 单件体积 < 总体积 * 0.1% → 微小件
     self.small_volume_absolute = 10000   # 单件体积 < 10000 mm³ → 微小件（硬阈值）
     self.small_bbox_max = 15.0          # 三个方向最大尺寸都 < 15mm → 微小件
-    # 厚实体判定参数
+    # 三层分类参数
+    self.thin_threshold = CLASSIFY_THREE_TIER.get("thin_threshold", 10.0)          # ≤10mm → thin
+    self.mid_thick_threshold = CLASSIFY_THREE_TIER.get("mid_thick_threshold", 15.0) # 10-15mm → mid_thick
     self.thick_bbox_ratio = 0.15      # 最小/最大方向比 ≥ 0.15 → 厚实体
-    self.thick_threshold = 10.0        # 等效厚度 > 10mm → 厚实体
+    # keep backward compat: thick_threshold is now thin_threshold
+    self.thick_threshold = self.thin_threshold
     self._result: Optional[ClassifyResult] = None
     self._total_volume: float = 0.0
     self._results: dict = {}  # comp_id → PartInfo
@@ -120,7 +124,7 @@ class GeometryClassifier:
       logger.info(f"  微小件: {part.name} | V={volume:.0f}mm³ bbox max={max(dx,dy,dz):.0f}mm")
       return part
 
-    # 判断2: 厚实体 vs 薄壁
+    # 判断2: 薄壁 vs 中厚 vs 厚实体
     # 策略优先级:
     #   1. hm_getgeometricthinsolidinfo → 真实几何厚度
     #   2. hm_getmass 体积/面积 → 2V/A 等效厚度
@@ -139,12 +143,15 @@ class GeometryClassifier:
     else:
       actual_thickness = bbox_min_dim
 
-    if actual_thickness <= self.thick_threshold:
+    if actual_thickness <= self.thin_threshold:
       part.category = "thin"
       logger.info(f"  薄壁件: {part.name} | 厚度={actual_thickness:.1f}mm")
+    elif actual_thickness < self.mid_thick_threshold:
+      part.category = "mid_thick"
+      logger.info(f"  中厚件: {part.name} | 厚度={actual_thickness:.1f}mm (六面体3层)")
     else:
-      part.category = "thick_solid"
-      logger.info(f"  厚实体: {part.name} | 厚度={actual_thickness:.1f}mm")
+      part.category = "thick"
+      logger.info(f"  厚实体: {part.name} | 厚度={actual_thickness:.1f}mm (六面体t/5层)")
 
     return part
 
@@ -169,7 +176,7 @@ class GeometryClassifier:
     logger.info(f"零件总数: {len(all_parts)}, 总体积: {self._total_volume:.0f} mm³")
 
     # 第二轮: 分类
-    thin_parts, small_parts, thick_parts, unknown_parts = [], [], [], []
+    thin_parts, small_parts, mid_thick_parts, thick_parts, unknown_parts = [], [], [], [], []
 
     for p in all_parts:
       p = self._classify_part(p)
@@ -179,7 +186,9 @@ class GeometryClassifier:
         thin_parts.append(p)
       elif p.category == "small":
         small_parts.append(p)
-      elif p.category == "thick_solid":
+      elif p.category == "mid_thick":
+        mid_thick_parts.append(p)
+      elif p.category == "thick":
         thick_parts.append(p)
       else:
         unknown_parts.append(p)
@@ -188,11 +197,13 @@ class GeometryClassifier:
       success=len(thin_parts) + len(thick_parts) > 0,
       thin_parts=thin_parts,
       small_parts=small_parts,
-      thick_solid_parts=thick_parts,
+      mid_thick_parts=mid_thick_parts,
+      thick_parts=thick_parts,
       unknown_parts=unknown_parts,
       message=(
         f"分类完成: 薄壁 {len(thin_parts)} /"
         f" 微小 {len(small_parts)} /"
+        f" 中厚 {len(mid_thick_parts)} /"
         f" 厚实体 {len(thick_parts)} /"
         f" 未知 {len(unknown_parts)}"
       ),
@@ -252,7 +263,8 @@ class GeometryClassifier:
     category_config = {
       "thin":  ("_薄壁件_shell", self._result.thin_parts),
       "small": ("_微小件_small", self._result.small_parts),
-      "thick": ("_实体件_solid", self._result.thick_solid_parts),
+      "mid_thick": ("_中厚件_hex", self._result.mid_thick_parts),
+      "thick": ("_实体件_solid", self._result.thick_parts),
     }
 
     created = {}

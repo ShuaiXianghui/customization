@@ -199,7 +199,8 @@ class MainWindow(tk.Tk):
       return
 
     thin = classifier.result.thin_parts
-    solid = classifier.result.solid_parts
+    solid = classifier.result.thick_parts
+    mid_thick = classifier.result.mid_thick_parts
 
     # Step 3: 中面抽取
     self._progress.set(40, "③ 中面抽取...")
@@ -214,7 +215,7 @@ class MainWindow(tk.Tk):
     # Step 4: 属性赋参
     self._progress.set(55, "④ 属性识别与材料赋参...")
     self._show_step("property")
-    self._property_panel.set_parts(thin, solid)
+    self._property_panel.set_parts(thin, solid, mid_thick)
     self._property_panel.set_thickness_map(thickness_map)
     self._property_panel._on_assign()
     self.update()
@@ -222,7 +223,7 @@ class MainWindow(tk.Tk):
     # Step 5: 网格划分
     self._progress.set(75, "⑤ 网格划分...")
     self._show_step("meshing")
-    self._meshing_panel.set_parts(thin, solid)
+    self._meshing_panel.set_parts(thin, solid, mid_thick)
     self._meshing_panel._on_mesh()
     self.update()
 

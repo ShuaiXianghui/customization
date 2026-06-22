@@ -33,7 +33,7 @@ class PropertyPanel(ttk.Frame):
 
     info_frame = ttk.Frame(self)
     info_frame.pack(fill=tk.X, pady=(0, 10))
-    self.info_label = ttk.Label(info_frame, text="待赋值: 0 个薄壁件 + 0 个实体件")
+    self.info_label = ttk.Label(info_frame, text="待赋值: 0 个薄壁件 + 0 个中厚件 + 0 个实体件")
     self.info_label.pack(anchor=tk.W)
 
     self.result_tree = ttk.Treeview(
@@ -60,11 +60,13 @@ class PropertyPanel(ttk.Frame):
       side=tk.RIGHT
     )
 
-  def set_parts(self, thin_parts: list, solid_parts: list):
+  def set_parts(self, thin_parts: list, solid_parts: list, mid_thick_parts: list = None):
     self._thin_parts = thin_parts
     self._solid_parts = solid_parts
+    self._mid_thick_parts = mid_thick_parts or []
+    n_mid = len(self._mid_thick_parts)
     self.info_label.config(
-      text=f"待赋值: {len(thin_parts)} 个薄壁件 + {len(solid_parts)} 个实体件"
+      text=f"待赋值: {len(thin_parts)} 个薄壁件 + {n_mid} 个中厚件 + {len(solid_parts)} 个实体件"
     )
 
   def set_thickness_map(self, thickness_map: dict):
@@ -78,9 +80,13 @@ class PropertyPanel(ttk.Frame):
     default_mat = self.mat_combo.get()
     self._assigner.set_default_material(default_mat)
 
+    # 合并中厚件和实体件为 solid_parts
+    mid_thick = getattr(self, "_mid_thick_parts", [])
+    all_solid = list(self._solid_parts) + list(mid_thick)
+
     result = self._assigner.run(
       self._thin_parts,
-      self._solid_parts,
+      all_solid,
       getattr(self, "_thickness_map", None),
     )
 

@@ -153,16 +153,16 @@ class PropertyAssigner:
     self, thin_parts: list, solid_parts: list, thickness_map: dict = None,
   ) -> PropertyResult:
     """批量赋属性
-    thin_parts: 可传入 PartInfo 对象列表，或直接传 comp_id 列表（BatchMesher 模式）
-    solid_parts: 同上
+    thin_parts: PartInfo 对象列表，或直接传 comp_id 列表
+    solid_parts: 同上（合并了 mid_thick + thick）
     """
     logger.info("开始属性识别与材料赋参...")
 
     self._records = []
     thickness_map = thickness_map or {}
 
+    # 薄壁件 → shell (PSHELL)
     for part in thin_parts:
-      # 兼容两种模式: PartInfo 对象 或 纯 int
       if isinstance(part, int):
         cid, name = part, f"comp_{part}"
         thk = thickness_map.get(cid)
@@ -172,6 +172,7 @@ class PropertyAssigner:
         thk = thickness_map.get(cid)
       self.assign_single(cid, name, "shell", thickness=thk)
 
+    # 中厚/厚实体 → solid (PSOLID)
     for part in solid_parts:
       if isinstance(part, int):
         cid, name = part, f"comp_{part}"

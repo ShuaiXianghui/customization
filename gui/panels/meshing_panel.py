@@ -4,7 +4,7 @@ from tkinter import ttk
 
 from gui.widgets import LabeledEntry, LabeledCombo
 from modules.meshing import MeshingEngine
-from config.settings import DEFAULT_SHELL_SIZE, DEFAULT_SOLID_SIZE
+from config.settings import DEFAULT_SHELL_SIZE, HEX_ELEM_SIZE
 from utils.logger import logger
 
 
@@ -30,7 +30,7 @@ class MeshingPanel(ttk.Frame):
     self.shell_size_entry.pack(side=tk.LEFT, padx=5, pady=5)
 
     self.solid_size_entry = LabeledEntry(
-      opts_frame, "体单元尺寸", str(DEFAULT_SOLID_SIZE), width=8
+      opts_frame, "六面体尺寸", str(HEX_ELEM_SIZE), width=8
     )
     self.solid_size_entry.pack(side=tk.LEFT, padx=5, pady=5)
 
@@ -44,7 +44,7 @@ class MeshingPanel(ttk.Frame):
 
     info_frame = ttk.Frame(self)
     info_frame.pack(fill=tk.X, pady=(0, 10))
-    self.info_label = ttk.Label(info_frame, text="待划分: 0 个薄壁件 + 0 个实体件")
+    self.info_label = ttk.Label(info_frame, text="待划分: 0 个薄壁件 + 0 个中厚件 + 0 个实体件")
     self.info_label.pack(anchor=tk.W)
 
     self.result_tree = ttk.Treeview(
@@ -69,11 +69,13 @@ class MeshingPanel(ttk.Frame):
       side=tk.RIGHT
     )
 
-  def set_parts(self, thin_parts: list, solid_parts: list):
+  def set_parts(self, thin_parts: list, solid_parts: list, mid_thick_parts: list = None):
     self._thin_parts = thin_parts
     self._solid_parts = solid_parts
+    self._mid_thick_parts = mid_thick_parts or []
+    n_mid = len(self._mid_thick_parts)
     self.info_label.config(
-      text=f"待划分: {len(thin_parts)} 个薄壁件 + {len(solid_parts)} 个实体件"
+      text=f"待划分: {len(thin_parts)} 个薄壁件 + {n_mid} 个中厚件 + {len(solid_parts)} 个实体件"
     )
 
   def _on_mesh(self):
@@ -85,7 +87,11 @@ class MeshingPanel(ttk.Frame):
     self._engine.set_solid_size(self.solid_size_entry.get_float() or DEFAULT_SOLID_SIZE)
     self._engine.shell_elem_type = self.shell_type_combo.get()
 
-    result = self._engine.run(self._thin_parts, self._solid_parts)
+    result = self._engine.run(
+      self._thin_parts, self._solid_parts,
+      mid_thick_parts=getattr(self, "_mid_thick_parts", []),
+      thick_parts=self._solid_parts,
+    )
 
     self.result_tree.delete(*self.result_tree.get_children())
     for r in result.records:

@@ -263,6 +263,52 @@ def api_tetmesh(comp_ids: list, elem_size: float = 8.0, **kwargs):
                 element_size=elem_size, type=2)
 
 
+def api_elemoffset_thinsolid(session=None, comp_ids=None, num_layers=3, elem_size=5.0):
+  """六面体网格 — elemoffset_thinsolid（板类实体）
+  自动检测源面/目标面/侧面，生成六面体为主的实体网格。
+
+  参数:
+    session:    HwSession（可选）
+    comp_ids:   组件 ID 列表
+    num_layers: 厚度方向层数
+    elem_size:  面内单元尺寸 (mm)
+  """
+  if not comp_ids:
+    return
+
+  hm_mod = get_hm()
+  model = get_model()
+  try:
+    import hm.entities as ent
+  except ImportError:
+    ent = hm_mod.entities
+
+  for cid in comp_ids:
+    try:
+      comp_sel = hm_mod.Collection(model, hm_mod.FilterByEnumeration(ent.Component, ids=[int(cid)]))
+      solid_col = hm_mod.Collection(model, hm_mod.FilterByCollection(ent.Solid, ent.Component), comp_sel)
+      empty_surfs = hm_mod.Collection(model, ent.Surface, populate=False)
+
+      string_array = hm.hwStringList()
+      # "2d: <elem_type> <elem_order> <method> <size> <min_size> <feature_angle> <mesh_flow>"
+      # elem_type=2(Mixed), elem_order=1(First), method=2(free)
+      string_array.append(f"2d: 2 1 2 {elem_size} 1.5 25.0 1")
+
+      model.elemoffset_thinsolid(
+        collection_source=solid_col,
+        collection_target=empty_surfs,
+        collection_along=empty_surfs,
+        modes=128,              # Bit6-7=10: 自动检测源面/目标面/侧面
+        density=num_layers,
+        biasing=0.0,
+        string_array=string_array,
+        batchmesh_source=1,
+      )
+      logger.info(f"elemoffset_thinsolid: comp{cid} done ({num_layers} layers, {elem_size}mm)")
+    except Exception as e:
+      logger.warn(f"elemoffset_thinsolid comp{cid} failed: {e}")
+
+
 # ===================== 中面抽取 =====================
 
 def api_extract_midsurface(*args):
@@ -838,6 +884,66 @@ def api_assign_material(
 ):
   """给组件赋材料属性（api_assign_property 的别名）"""
   return api_assign_property(comp_id, material, thickness, card_type)
+
+
+def api_assign_property_shared(thin_groups: list, thick_comp_ids: list,
+                                material_db: dict = None):
+  """共享材料/属性赋参（geometry_defeature.py 风格）
+
+  薄壁件: 按厚度分组，每组创建 T{thk}_{mat} PSHELL 属性，共用 Q235
+  厚实体: 共用 "SW" PSOLID 属性 + Q355
+
+  参数:
+    thin_groups:   [(comp_id_list, thickness, material_name), ...]
+    thick_comp_ids: 所有厚实体 comp_id 列表
+    material_db:    material_db.json 内容 (dict)
+  """
+  if not material_db:
+    material_db = {}
+
+  # ---- Q235 material ----
+  mat_q235 = material_db.get("Q235", {"E": 210000, "nu": 0.3, "rho": 7.85e-9})
+  exec_tcl(
+    f"*collectorcreate materials \"MAT_235\" \"\" 11; "
+    f"*setvalue materials id=1 STATUS=1 1=1; "
+    f"*materialupdate materials 1 E={mat_q235['E']} NU={mat_q235['nu']} RHO={mat_q235['rho']}"
+  )
+  logger.info("材料 MAT_235 (Q235) 已创建")
+
+  # ---- Thin parts: PSHELL per thickness group ----
+  for comp_ids, thickness, mat_name in thin_groups:
+    prop_name = f"T{thickness:.0f}_{mat_name}"
+    for cid in comp_ids:
+      exec_tcl(
+        f"*collectorcreate properties \"{prop_name}\" \"PSHELL\" 11; "
+        f"*setvalue props id=1 STATUS=1 95=1 1={thickness}; "
+        f"*createmark comps 1 {cid}; "
+        f"*componentupdate comps 1 1 0 \"{prop_name}\" 1 0 \"MAT_235\""
+      )
+    logger.info(f"PSHELL {prop_name}: {len(comp_ids)} 个组件 (T={thickness}mm)")
+
+  # ---- Thick parts: shared PSOLID "SW" with Q355 ----
+  if thick_comp_ids:
+    mat_q355 = material_db.get("Q355", {"E": 210000, "nu": 0.3, "rho": 7.85e-9})
+    exec_tcl(
+      f"*collectorcreate materials \"MAT_355\" \"\" 11; "
+      f"*setvalue materials id=1 STATUS=1 1=1; "
+      f"*materialupdate materials 1 E={mat_q355['E']} NU={mat_q355['nu']} RHO={mat_q355['rho']}"
+    )
+    logger.info("材料 MAT_355 (Q355) 已创建")
+
+    exec_tcl(
+      f"*collectorcreate properties \"SW\" \"PSOLID\" 11; "
+      f"*setvalue props id=1 STATUS=1 95=1"
+    )
+    logger.info("属性 SW (PSOLID) 已创建")
+
+    for cid in thick_comp_ids:
+      exec_tcl(
+        f"*createmark comps 1 {cid}; "
+        f"*componentupdate comps 1 1 0 \"SW\" 1 0 \"MAT_355\""
+      )
+    logger.info(f"SW PSOLID -> {len(thick_comp_ids)} 个厚实体组件")
 
 
 # ===================== 模型名获取 =====================

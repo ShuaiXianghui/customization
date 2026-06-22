@@ -12,7 +12,8 @@ DEFAULT_SOLID_SIZE = 8.0
 
 # 网格类型
 SHELL_ELEM_TYPE = "mixed"  # mixed / tria / quads
-SOLID_ELEM_TYPE = "tetra"  # tetra / hexa
+SOLID_ELEM_TYPE = "hexa"   # tetra / hexa
+HEX_ELEM_SIZE = 5.0       # 六面体面内单元尺寸 (mm)
 
 # 网格质量要求
 MESH_QUALITY = {
@@ -25,7 +26,16 @@ MESH_QUALITY = {
   "max_angle_tria": 120
 }
 
-# 几何分类参数
+# 几何分类参数（三层：薄壁 / 中厚 / 厚实体）
+CLASSIFY_THREE_TIER = {
+  "thin_threshold": 10.0,       # ≤10mm → 薄壁件 (壳网格)
+  "mid_thick_threshold": 15.0,  # 10-15mm → 中厚件 (六面体3层)
+  # ≥15mm → 厚实体 (六面体 t/5 层)
+  "mid_layer": 3,               # 中厚件厚度方向层数
+  "thick_layer_factor": 5,      # 厚实体层数 = ceil(t / factor)
+}
+
+# 几何分类参数（二分类旧参数，保留兼容）
 CLASSIFY = {
   "thin_threshold": 0.08
 }

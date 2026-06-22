@@ -90,8 +90,18 @@ def exec_tcl(tcl_cmd: str):
     _detect_hm()
   if _MODEL is not None:
     return _MODEL.evaltclstring(tcl_cmd, 0)
-  from utils.logger import logger
-  logger.info(f"[模拟] {tcl_cmd}")
+
+
+def exec_tcl_quiet(tcl_cmd: str):
+  """执行 Tcl 命令，忽略错误（不抛异常）"""
+  global _MODEL
+  if _MODEL is None:
+    _detect_hm()
+  if _MODEL is not None:
+    try:
+      return _MODEL.evaltclstring(tcl_cmd, 0)
+    except Exception:
+      return None
   return None
 
 

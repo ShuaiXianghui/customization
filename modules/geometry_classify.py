@@ -22,6 +22,7 @@ from utils.hw_api import (
   api_group_solids_by_thickness,
   api_move_solids_to_new_component,
   exec_tcl,
+  exec_tcl_quiet,
   get_hm,
   get_model,
 )
@@ -160,28 +161,11 @@ class GeometryClassifier:
         thickness=float(t_key), category="thick",
       ))
 
-    # ---- Step 4: 删除现已为空的原始组件 ----
-    for cid in comp_ids:
-      try:
-        hm_mod = get_hm()
-        model = get_model()
-        import hm.entities as ent
-        comp = ent.Component(model, int(cid))
-        # 检查是否为空（没有 solid, surface, element）
-        has_content = False
-        for entity_type in [ent.Solid, ent.Surface, ent.Element]:
-          try:
-            sub_col = hm_mod.Collection(model, hm_mod.FilterByCollection(entity_type, ent.Component), comp)
-            if len(sub_col) > 0:
-              has_content = True
-              break
-          except Exception:
-            pass
-        if not has_content:
-          model.delete(comp)
-          logger.info(f"已删除空组件: comp_{cid}")
-      except Exception:
-        pass
+    # ---- Step 4: 删除现已为空的原始组件（用 Tcl，不抛异常）----
+    # 对于已移动到新厚度分组组件的 Solid/Surface，原组件变空后删除
+    # 使用 conservative 策略：不逐个检查，直接对原始所有 component 标记，用 Tcl deletemark
+    all_cids_str = " ".join(str(int(c)) for c in comp_ids)
+    exec_tcl_quiet(f"*createmark comps 777 {all_cids_str}; *deletemark comps 777")
 
     # ---- Step 5: 检测微小件 ----
     remaining = api_get_component_list(self.session)

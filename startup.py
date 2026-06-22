@@ -152,18 +152,18 @@ def classify(show_details=False):
   _classify_result = result
   if result.success:
     print(f"\n{'='*60}")
-    print(f"  薄壁件组(T{thk}_shell): {len(result.thin_parts)} 组")
+    print(f"  薄壁件组: {len(result.thin_parts)} 组")
     for p in result.thin_parts:
       n_solids = _count_solids(p.comp_id)
-      print(f"    {p.name}: {n_solids}个实体")
-    print(f"  中厚件组(T{thk}_solid): {len(result.mid_thick_parts)} 组")
+      print(f"    {p.name}: {n_solids}个实体 (t={p.thickness:.1f}mm)")
+    print(f"  中厚件组: {len(result.mid_thick_parts)} 组")
     for p in result.mid_thick_parts:
       n_solids = _count_solids(p.comp_id)
-      print(f"    {p.name}: {n_solids}个实体")
-    print(f"  厚实体组(T{thk}_solid): {len(result.thick_parts)} 组")
+      print(f"    {p.name}: {n_solids}个实体 (t={p.thickness:.1f}mm)")
+    print(f"  厚实体组: {len(result.thick_parts)} 组")
     for p in result.thick_parts:
       n_solids = _count_solids(p.comp_id)
-      print(f"    {p.name}: {n_solids}个实体")
+      print(f"    {p.name}: {n_solids}个实体 (t={p.thickness:.1f}mm)")
     print(f"  微小件: {len(result.small_parts)} 组")
     print(f"{'='*60}")
     print(f"\n  下一步: del_small() 删除微小件 → batchmesh()(薄壁) + solid_mesh()(中厚/厚)")

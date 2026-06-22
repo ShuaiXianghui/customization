@@ -1,0 +1,44 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# HyperMesh BatchMesher distribution (shipped with HM)
+batchmesh/
+
+# BatchMesh runtime temp directories
+bm_*/
+
+# Generated geometry exports (large files, auto-generated)
+representations/
+
+# Auto-generated representation controls
+representation_controls_files/
+
+# HM debug reports
+hwreport/
+
+# Claude local settings
+.claude/
+
+# AGENTS.md (auxiliary notes)
+AGENTS.md
+
+# HM recording outputs (auto-generated Tcl scripts)
+command*.tcl
+
+# HM model files (binary/large)
+*.hm
+
+# Auto-generated config
+representation_controls.cfg
+
+# Log files
+*.log
+
+# Auto-generated HM API docs
+docs/hm_api/
+
+# Strategic/planning documents (not source code)
+AI原生工业生态_未来图景与战略思考.md
+AI原生工业生态_未来图景与战略思考.html
+仿真分析能力建设_技术路线图.md

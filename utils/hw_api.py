@@ -739,11 +739,14 @@ def api_get_component_volume(session=None, comp_id: int = 0) -> float:
     pass
 
   # 方法3: 包络盒估算
-  bbox = api_get_component_bbox(session, comp_id)
-  dx = bbox[3] - bbox[0]; dy = bbox[4] - bbox[1]; dz = bbox[5] - bbox[2]
-  if dx <= 0 or dy <= 0 or dz <= 0:
+  try:
+    bbox = api_get_component_bbox(None, comp_id)
+    dx = bbox[3] - bbox[0]; dy = bbox[4] - bbox[1]; dz = bbox[5] - bbox[2]
+    if dx <= 0 or dy <= 0 or dz <= 0:
+      return 0.0
+    return dx * dy * dz * 0.5
+  except Exception:
     return 0.0
-  return dx * dy * dz * 0.5
 
 
 def api_get_component_area(session=None, comp_id: int = 0) -> float:
@@ -765,10 +768,13 @@ def api_get_component_area(session=None, comp_id: int = 0) -> float:
   except Exception:
     pass
   # 回退: 包络盒估算
-  bbox = api_get_component_bbox(session, comp_id)
-  dx = bbox[3] - bbox[0]; dy = bbox[4] - bbox[1]; dz = bbox[5] - bbox[2]
-  if dx > 0:
-    return 2 * (dx*dy + dy*dz + dx*dz) * 1.5
+  try:
+    bbox = api_get_component_bbox(None, comp_id)
+    dx = bbox[3] - bbox[0]; dy = bbox[4] - bbox[1]; dz = bbox[5] - bbox[2]
+    if dx > 0:
+      return 2 * (dx*dy + dy*dz + dx*dz) * 1.5
+  except Exception:
+    pass
   return 0.0
 
 
@@ -776,22 +782,25 @@ def api_get_component_bbox(session=None, comp_id: int = 0):
   """获取组件包络盒，返回 (xmin, ymin, zmin, xmax, ymax, zmax)"""
   if not comp_id:
     return (0, 0, 0, 0, 0, 0)
-  hm_mod = get_hm()
-  model = get_model()
   try:
-    import hm.entities as ent
-  except ImportError:
-    ent = hm_mod.entities
-  comp_col = hm_mod.Collection(model, ent.Component, [int(comp_id)])
-  _, result = model.hm_getboundingbox(
-    entityCollection=comp_col, entityFlag=3, systemID=0, boxType=0
-  )
-  min_vals = result.minValues
-  max_vals = result.maxValues
-  return (
-    float(min_vals[0]), float(min_vals[1]), float(min_vals[2]),
-    float(max_vals[0]), float(max_vals[1]), float(max_vals[2]),
-  )
+    hm_mod = get_hm()
+    model = get_model()
+    try:
+      import hm.entities as ent
+    except ImportError:
+      ent = hm_mod.entities
+    comp_col = hm_mod.Collection(model, ent.Component, [int(comp_id)])
+    _, result = model.hm_getboundingbox(
+      entityCollection=comp_col, entityFlag=3, systemID=0, boxType=0
+    )
+    min_vals = result.minValues
+    max_vals = result.maxValues
+    return (
+      float(min_vals[0]), float(min_vals[1]), float(min_vals[2]),
+      float(max_vals[0]), float(max_vals[1]), float(max_vals[2]),
+    )
+  except Exception:
+    return (0, 0, 0, 0, 0, 0)
 
 
 def api_get_component_thickness(session=None, comp_id: int = 0) -> float:

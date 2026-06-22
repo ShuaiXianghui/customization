@@ -110,7 +110,9 @@ class GeometryClassifier:
     return small_comp_ids
 
   def run(self, comp_ids: list = None) -> ClassifyResult:
-    """主流程: 遍历 Solid → 按厚度分组 → 创建 T{thk}_shell / T{thk}_solid Component"""
+    """主流程: 遍历 Solid → 按厚度分组 → 创建 T{thk}_shell / T{thk}_solid Component
+    未被分类的 surface/line 等保留到 _others 组件
+    """
     logger.info("===== 按厚度分组分类 =====")
 
     if comp_ids is None:
@@ -130,8 +132,29 @@ class GeometryClassifier:
       logger.info("未检测到有效的 Solid 实体")
       return ClassifyResult(success=False, message="未找到可分类的 Solid")
 
-    # ---- Step 2: 删除旧组件（用新的厚度分组组件替代）----
-    self._original_comps = list(comp_ids)
+    # 收集所有已分类的 solid ID
+    classified_sids = set()
+    for t_key, sids in shell_groups.items():
+      classified_sids.update(sids)
+    for t_key, sids in mid_groups.items():
+      classified_sids.update(sids)
+    for t_key, sids in thick_groups.items():
+      classified_sids.update(sids)
+
+    # ---- Step 2: 创建 _others 组件存放未分类的 solid ----
+    import hm.entities as ent
+    hm_mod = get_hm()
+    model = get_model()
+    all_solids = hm_mod.Collection(model, ent.Solid)
+    unclassified_sids = []
+    for s in all_solids:
+      sid = int(s.id)
+      if sid not in classified_sids:
+        unclassified_sids.append(sid)
+
+    if unclassified_sids:
+      api_move_solids_to_new_component("_others", unclassified_sids)
+      logger.info(f"_others: {len(unclassified_sids)} 个未分类 Solid")
 
     # ---- Step 3: 为每个厚度分组创建新 Component ----
     thin_parts = []
@@ -161,14 +184,13 @@ class GeometryClassifier:
         thickness=float(t_key), category="thick",
       ))
 
-    # ---- Step 4: 删除现已为空的原始组件（用 Tcl，不抛异常）----
-    # 对于已移动到新厚度分组组件的 Solid/Surface，原组件变空后删除
-    # 使用 conservative 策略：不逐个检查，直接对原始所有 component 标记，用 Tcl deletemark
+    # ---- Step 4: 删除现已为空的原始组件 ----
     all_cids_str = " ".join(str(int(c)) for c in comp_ids)
     exec_tcl_quiet(f"*createmark comps 777 {all_cids_str}; *deletemark comps 777")
 
-    # ---- Step 5: 检测微小件 ----
-    remaining = api_get_component_list(self.session)
+    # ---- Step 5: 检测微小件（跳过 _others）----
+    remaining = [c for c in api_get_component_list(self.session)
+                 if api_get_component_name(self.session, c) != "_others"]
     small_comp_ids = self._detect_small_solids(remaining)
 
     small_parts = []

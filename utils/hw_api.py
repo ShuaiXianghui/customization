@@ -309,6 +309,82 @@ def api_elemoffset_thinsolid(session=None, comp_ids=None, num_layers=3, elem_siz
       logger.warn(f"elemoffset_thinsolid comp{cid} failed: {e}")
 
 
+def api_group_solids_by_thickness(session=None) -> dict:
+  """遍历模型中所有 Solid，按 hm_getgeometricthinsolidinfo 厚度分组
+
+  返回:
+    {
+      "solid_info": [(solid_id, thickness), ...],    # 所有有效的 solid
+      "shell_groups":  {thickness_key: [solid_id, ...]},   # ≤10mm
+      "mid_groups":    {thickness_key: [solid_id, ...]},   # 10-15mm
+      "thick_groups":  {thickness_key: [solid_id, ...]},   # ≥15mm
+    }
+  """
+  hm_mod = get_hm()
+  model = get_model()
+  try:
+    import hm.entities as ent
+  except ImportError:
+    ent = hm_mod.entities
+
+  all_solids = hm_mod.Collection(model, ent.Solid)
+  if len(all_solids) == 0:
+    return {"solid_info": [], "shell_groups": {}, "mid_groups": {}, "thick_groups": {}}
+
+  _, result_list = model.hm_getgeometricthinsolidinfo(collection=all_solids, mode="simple")
+  if not result_list:
+    return {"solid_info": [], "shell_groups": {}, "mid_groups": {}, "thick_groups": {}}
+
+  solid_info = []
+  shell_groups = {}
+  mid_groups = {}
+  thick_groups = {}
+
+  for r in result_list:
+    sid = int(r.entity.id)
+    t = float(r.thickness)
+    if t <= 0:
+      continue
+
+    solid_info.append((sid, t))
+    t_key = f"{t:.1f}"
+
+    if t <= 10.0:
+      shell_groups.setdefault(t_key, []).append(sid)
+    elif t < 15.0:
+      mid_groups.setdefault(t_key, []).append(sid)
+    else:
+      thick_groups.setdefault(t_key, []).append(sid)
+
+  return {
+    "solid_info": solid_info,
+    "shell_groups": shell_groups,
+    "mid_groups": mid_groups,
+    "thick_groups": thick_groups,
+  }
+
+
+def api_move_solids_to_new_component(comp_name: str, solid_ids: list) -> int:
+  """创建新 Component 并将指定 Solid 移入，返回新 comp_id"""
+  hm_mod = get_hm()
+  model = get_model()
+  try:
+    import hm.entities as ent
+  except ImportError:
+    ent = hm_mod.entities
+
+  comp = ent.Component(model)
+  comp.name = comp_name
+  cid = int(comp.id)
+
+  # movemark: 把 solids 从原组件移动到新组件
+  solid_col = hm_mod.Collection(model, hm_mod.FilterByEnumeration(ent.Solid, [int(s) for s in solid_ids]))
+  model.movemark(collection=solid_col, name=comp_name)
+
+  logger.info(f"创建组件 '{comp_name}' (id={cid}), 移入 {len(solid_ids)} 个 Solid")
+  return cid
+
+
 # ===================== 中面抽取 =====================
 
 def api_extract_midsurface(*args):

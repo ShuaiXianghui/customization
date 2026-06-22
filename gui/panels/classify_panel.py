@@ -4,7 +4,6 @@ from tkinter import ttk
 
 from gui.widgets import LabeledEntry
 from modules.geometry_classify import GeometryClassifier
-from config.settings import CLASSIFY
 from utils.logger import logger
 
 
@@ -25,11 +24,11 @@ class ClassifyPanel(ttk.Frame):
     opts_frame.pack(fill=tk.X, pady=(0, 10))
 
     self.threshold_entry = LabeledEntry(
-      opts_frame, "薄壁阈值", str(CLASSIFY["thin_threshold"]), width=8
+      opts_frame, "薄壁阈值(mm)", str(10.0), width=8
     )
     self.threshold_entry.pack(side=tk.LEFT, padx=5, pady=5)
 
-    ttk.Label(opts_frame, text="(体量比 < 阈值为薄壁件, 默认 0.08)").pack(
+    ttk.Label(opts_frame, text="(≤阈值为薄壁件_shell, >阈值为实体_solid)").pack(
       side=tk.LEFT, padx=5
     )
 
@@ -39,7 +38,8 @@ class ClassifyPanel(ttk.Frame):
     self.result_tree.heading("id", text="ID")
     self.result_tree.heading("name", text="组件名")
     self.result_tree.heading("type", text="类型")
-    self.result_tree.heading("ratio", text="体量比")
+    self.result_tree.heading("ratio", text="厚度")
+    self.result_tree.column("ratio", width=100)
     self.result_tree.column("id", width=60)
     self.result_tree.column("name", width=160)
     self.result_tree.column("type", width=80)
@@ -53,7 +53,7 @@ class ClassifyPanel(ttk.Frame):
     )
 
   def _on_classify(self):
-    threshold = self.threshold_entry.get_float() or CLASSIFY["thin_threshold"]
+    threshold = self.threshold_entry.get_float() or 0.08
     self._classifier.set_threshold(threshold)
     result = self._classifier.run()
 
@@ -61,19 +61,19 @@ class ClassifyPanel(ttk.Frame):
 
     for p in result.thin_parts:
       self.result_tree.insert(
-        "", tk.END, values=(p.comp_id, p.name, "薄壁件", f"{p.ratio:.6f}")
+        "", tk.END, values=(p.comp_id, p.name, "薄壁件", f"{p.thickness:.1f}mm")
       )
     for p in result.mid_thick_parts:
       self.result_tree.insert(
-        "", tk.END, values=(p.comp_id, p.name, "中厚件", f"{p.ratio:.6f}")
+        "", tk.END, values=(p.comp_id, p.name, "中厚件", f"{p.thickness:.1f}mm")
       )
     for p in result.thick_parts:
       self.result_tree.insert(
-        "", tk.END, values=(p.comp_id, p.name, "实体件", f"{p.ratio:.6f}")
+        "", tk.END, values=(p.comp_id, p.name, "实体件", f"{p.thickness:.1f}mm")
       )
-    for p in result.unknown_parts:
+    for p in result.small_parts:
       self.result_tree.insert(
-        "", tk.END, values=(p, "?", "未知", "-")
+        "", tk.END, values=(p.comp_id, p.name, "微小件", "-")
       )
 
   def get_classifier(self) -> GeometryClassifier:

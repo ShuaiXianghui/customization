@@ -1,12 +1,15 @@
 """
-几何分类模块 — 三维判定：薄壁件 / 微小件 / 厚实体件
-针对叉车结构件优化的体量比判定策略 + 体积过滤
+几何分类模块 — 按厚度分组 + 重组 Component
+参照 geometry_defeature.py 逻辑：
+  遍历所有 Solid → hm_getgeometricthinsolidinfo 获取厚度 →
+  ≤10mm → T{thk}_shell, 10-15mm → T{thk}_solid, ≥15mm → T{thk}_solid
+同时检测微小件（体积≤10000mm³ or bbox<20mm）→ _small
 """
 import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from config.settings import CLASSIFY, CLASSIFY_THREE_TIER
+from config.settings import CLASSIFY_THREE_TIER
 from utils.logger import logger
 from utils.hw_api import (
   get_session,
@@ -16,6 +19,8 @@ from utils.hw_api import (
   api_get_component_area,
   api_get_component_bbox,
   api_get_solid_thickness,
+  api_group_solids_by_thickness,
+  api_move_solids_to_new_component,
   exec_tcl,
   get_hm,
   get_model,
@@ -24,140 +29,88 @@ from utils.hw_api import (
 
 @dataclass
 class PartInfo:
-  """零件信息"""
+  """零件信息 — 按厚度分组后的 Component"""
 
   comp_id: int
-  name: str
-  volume: float = 0.0
-  surface_area: float = 0.0
-  bbox_dims: tuple = (0, 0, 0)
-  category: str = "unknown"   # "thin" / "small" / "thick_solid" / "unknown"
-  ratio: float = 0.0
-  bbox_ratio: float = 0.0
-  moved_to: str = ""          # 记录被移动到哪个组件
+  name: str            # T{thk}_shell / T{thk}_solid / _small_N
+  thickness: float = 0.0
+  category: str = "unknown"   # "thin" / "small" / "mid_thick" / "thick"
 
 
 @dataclass
 class ClassifyResult:
   success: bool
-  thin_parts: list = field(default_factory=list)       # 可抽中面的薄壁件 (≤10mm)
-  small_parts: list = field(default_factory=list)      # 微小件（可删除）
-  mid_thick_parts: list = field(default_factory=list)  # 中厚件 10-15mm (hex 3层)
-  thick_parts: list = field(default_factory=list)      # 厚实体件 ≥15mm (hex t/5层)
-  unknown_parts: list = field(default_factory=list)
+  thin_parts: list = field(default_factory=list)        # T{thk}_shell (≤10mm)
+  small_parts: list = field(default_factory=list)       # _small (已合并到一个组件)
+  mid_thick_parts: list = field(default_factory=list)   # T{thk}_solid (10-15mm)
+  thick_parts: list = field(default_factory=list)       # T{thk}_solid (≥15mm)
   message: str = ""
+
+  # 旧字段别名（向后兼容）
+  @property
+  def thick_solid_parts(self):
+    return self.thick_parts
+
+  @property
+  def solid_parts(self):
+    return self.mid_thick_parts + self.thick_parts
 
 
 class GeometryClassifier:
-  """三维分类器 — 体积/表面积比值 + 包络盒比例 + 体积过滤"""
+  """按厚度分组的几何分类器 — geometry_defeature.py 风格"""
 
   def __init__(self, session=None):
     self.session = session or get_session()
-    self.threshold = CLASSIFY.get("thin_threshold", 0.08)
-    # 微小件判定参数
-    self.small_volume_ratio = 0.001     # 单件体积 < 总体积 * 0.1% → 微小件
-    self.small_volume_absolute = 10000   # 单件体积 < 10000 mm³ → 微小件（硬阈值）
-    self.small_bbox_max = 15.0          # 三个方向最大尺寸都 < 15mm → 微小件
-    # 三层分类参数
-    self.thin_threshold = CLASSIFY_THREE_TIER.get("thin_threshold", 10.0)          # ≤10mm → thin
-    self.mid_thick_threshold = CLASSIFY_THREE_TIER.get("mid_thick_threshold", 15.0) # 10-15mm → mid_thick
-    self.thick_bbox_ratio = 0.15      # 最小/最大方向比 ≥ 0.15 → 厚实体
-    # keep backward compat: thick_threshold is now thin_threshold
-    self.thick_threshold = self.thin_threshold
+    self.thin_threshold = CLASSIFY_THREE_TIER.get("thin_threshold", 10.0)
+    self.mid_thick_threshold = CLASSIFY_THREE_TIER.get("mid_thick_threshold", 15.0)
+    self.small_volume_absolute = 10000  # mm³
     self._result: Optional[ClassifyResult] = None
-    self._total_volume: float = 0.0
-    self._results: dict = {}  # comp_id → PartInfo
-
-  def set_params(self, volume_ratio=None, volume_abs=None, bbox_max=None, thick_ratio=None):
-    if volume_ratio is not None: self.small_volume_ratio = volume_ratio
-    if volume_abs is not None: self.small_volume_absolute = volume_abs
-    if bbox_max is not None: self.small_bbox_max = bbox_max
-    if thick_ratio is not None: self.thick_bbox_ratio = thick_ratio
+    self._original_comps: list = []  # 原始 component id 列表（用于后续删除）
 
   @property
   def result(self) -> Optional[ClassifyResult]:
     return self._result
 
-  def _get_part_info(self, comp_id: int) -> Optional[PartInfo]:
-    try:
-      name = api_get_component_name(self.session, comp_id) or f"comp_{comp_id}"
-      volume = api_get_component_volume(self.session, comp_id)
-      area = api_get_component_area(self.session, comp_id) or 1.0
-      bbox = api_get_component_bbox(self.session, comp_id)
-      dx = bbox[3] - bbox[0] if len(bbox) >= 6 else 0
-      dy = bbox[4] - bbox[1] if len(bbox) >= 6 else 0
-      dz = bbox[5] - bbox[2] if len(bbox) >= 6 else 0
+  def set_threshold(self, value: float):
+    """设置薄壁/实体分界阈值（GUI 用）"""
+    self.thin_threshold = value
+    self.mid_thick_threshold = max(value + 5.0, 15.0)
 
-      return PartInfo(
-        comp_id=comp_id, name=name,
-        volume=volume, surface_area=area, bbox_dims=(dx, dy, dz),
-      )
-    except Exception as e:
-      logger.warn(f"获取零件 {comp_id} 几何信息失败: {e}")
-      return None
+  def set_params(self, volume_abs=None):
+    """设置微小件参数"""
+    if volume_abs is not None:
+      self.small_volume_absolute = volume_abs
 
-  def _classify_part(self, part: PartInfo) -> PartInfo:
-    """三维判定：thin / small / thick_solid"""
-    volume = part.volume
-    area = part.surface_area
-    dx, dy, dz = part.bbox_dims
-    dims_sorted = sorted([dx, dy, dz], reverse=True)
-    bbox_max_dim = dims_sorted[0] if dims_sorted[0] > 0 else 1
-    bbox_min_dim = dims_sorted[2]
+  def _detect_small_solids(self, all_comps: list) -> list:
+    """检测微小件: 体积≤10000mm³ 或包络盒最大尺寸<20mm 的 component"""
+    small_comp_ids = []
+    total_vol = 0.0
+    for cid in all_comps:
+      vol = api_get_component_volume(self.session, cid)
+      total_vol += vol
 
-    if volume <= 0 or area <= 0:
-      part.ratio = 0
-      part.bbox_ratio = 0
-    else:
-      part.ratio = volume / (area ** 1.5)
-      part.bbox_ratio = bbox_min_dim / bbox_max_dim
+    for cid in all_comps:
+      vol = api_get_component_volume(self.session, cid)
+      bbox = api_get_component_bbox(self.session, cid)
+      if len(bbox) >= 6:
+        dx = bbox[3] - bbox[0]
+        dy = bbox[4] - bbox[1]
+        dz = bbox[5] - bbox[2]
+        bbox_max = max(dx, dy, dz)
+      else:
+        bbox_max = 0
 
-    volume_pct = (volume / self._total_volume) if self._total_volume > 0 else 0
+      is_small = vol <= self.small_volume_absolute or bbox_max < 20.0
+      if is_small and vol > 0:
+        name = api_get_component_name(self.session, cid)
+        small_comp_ids.append(cid)
+        logger.info(f"  微小件: {name} | V={vol:.0f}mm³ bbox_max={bbox_max:.0f}mm")
 
-    # 判断1: 微小件
-    # 条件: 体积 ≤ 10000mm³ 或 包络盒最大尺寸 < 20mm
-    # 注意: hm_getmass 对无材料属性的几何体可能返回 0，此时 bbox 回退体积用于判断
-    is_small = volume <= self.small_volume_absolute or max(dx, dy, dz) < 20.0
-
-    if is_small:
-      part.category = "small"
-      logger.info(f"  微小件: {part.name} | V={volume:.0f}mm³ bbox max={max(dx,dy,dz):.0f}mm")
-      return part
-
-    # 判断2: 薄壁 vs 中厚 vs 厚实体
-    # 策略优先级:
-    #   1. hm_getgeometricthinsolidinfo → 真实几何厚度
-    #   2. hm_getmass 体积/面积 → 2V/A 等效厚度
-    #   3. bbox_min_dim（回退）
-    geom_thickness = api_get_solid_thickness(self.session, part.comp_id)
-
-    if area > 0 and volume > 0:
-      equiv_thk = 2.0 * volume / area
-    else:
-      equiv_thk = 0
-
-    if geom_thickness > 0:
-      actual_thickness = geom_thickness
-    elif equiv_thk > 0:
-      actual_thickness = equiv_thk
-    else:
-      actual_thickness = bbox_min_dim
-
-    if actual_thickness <= self.thin_threshold:
-      part.category = "thin"
-      logger.info(f"  薄壁件: {part.name} | 厚度={actual_thickness:.1f}mm")
-    elif actual_thickness < self.mid_thick_threshold:
-      part.category = "mid_thick"
-      logger.info(f"  中厚件: {part.name} | 厚度={actual_thickness:.1f}mm (六面体3层)")
-    else:
-      part.category = "thick"
-      logger.info(f"  厚实体: {part.name} | 厚度={actual_thickness:.1f}mm (六面体t/5层)")
-
-    return part
+    return small_comp_ids
 
   def run(self, comp_ids: list = None) -> ClassifyResult:
-    """执行三维分类"""
-    logger.info("===== 三维零件分类 =====")
+    """主流程: 遍历 Solid → 按厚度分组 → 创建 T{thk}_shell / T{thk}_solid Component"""
+    logger.info("===== 按厚度分组分类 =====")
 
     if comp_ids is None:
       comp_ids = api_get_component_list(self.session)
@@ -165,62 +118,118 @@ class GeometryClassifier:
     if not comp_ids:
       return ClassifyResult(success=False, message="未找到任何组件")
 
-    # 第一轮: 获取所有零件信息并计算总体积
-    all_parts = []
+    # ---- Step 1: 获取所有 Solid 厚度 ----
+    groups = api_group_solids_by_thickness(self.session)
+    shell_groups = groups["shell_groups"]    # ≤10mm
+    mid_groups = groups["mid_groups"]        # 10-15mm
+    thick_groups = groups["thick_groups"]    # ≥15mm
+    solid_info = groups["solid_info"]
+
+    if not solid_info:
+      logger.info("未检测到有效的 Solid 实体")
+      return ClassifyResult(success=False, message="未找到可分类的 Solid")
+
+    # ---- Step 2: 删除旧组件（用新的厚度分组组件替代）----
+    self._original_comps = list(comp_ids)
+
+    # ---- Step 3: 为每个厚度分组创建新 Component ----
+    thin_parts = []
+    for t_key, sids in sorted(shell_groups.items(), key=lambda kv: float(kv[0])):
+      comp_name = f"T{t_key}_shell"
+      cid = api_move_solids_to_new_component(comp_name, sids)
+      thin_parts.append(PartInfo(
+        comp_id=cid, name=comp_name,
+        thickness=float(t_key), category="thin",
+      ))
+
+    mid_thick_parts = []
+    for t_key, sids in sorted(mid_groups.items(), key=lambda kv: float(kv[0])):
+      comp_name = f"T{t_key}_solid"
+      cid = api_move_solids_to_new_component(comp_name, sids)
+      mid_thick_parts.append(PartInfo(
+        comp_id=cid, name=comp_name,
+        thickness=float(t_key), category="mid_thick",
+      ))
+
+    thick_parts = []
+    for t_key, sids in sorted(thick_groups.items(), key=lambda kv: float(kv[0])):
+      comp_name = f"T{t_key}_solid"
+      cid = api_move_solids_to_new_component(comp_name, sids)
+      thick_parts.append(PartInfo(
+        comp_id=cid, name=comp_name,
+        thickness=float(t_key), category="thick",
+      ))
+
+    # ---- Step 4: 删除现已为空的原始组件 ----
     for cid in comp_ids:
-      info = self._get_part_info(cid)
-      if info is not None:
-        all_parts.append(info)
-        self._total_volume += info.volume
+      try:
+        hm_mod = get_hm()
+        model = get_model()
+        import hm.entities as ent
+        comp = ent.Component(model, int(cid))
+        # 检查是否为空（没有 solid, surface, element）
+        has_content = False
+        for entity_type in [ent.Solid, ent.Surface, ent.Element]:
+          try:
+            sub_col = hm_mod.Collection(model, hm_mod.FilterByCollection(entity_type, ent.Component), comp)
+            if len(sub_col) > 0:
+              has_content = True
+              break
+          except Exception:
+            pass
+        if not has_content:
+          model.delete(comp)
+          logger.info(f"已删除空组件: comp_{cid}")
+      except Exception:
+        pass
 
-    logger.info(f"零件总数: {len(all_parts)}, 总体积: {self._total_volume:.0f} mm³")
+    # ---- Step 5: 检测微小件 ----
+    remaining = api_get_component_list(self.session)
+    small_comp_ids = self._detect_small_solids(remaining)
 
-    # 第二轮: 分类
-    thin_parts, small_parts, mid_thick_parts, thick_parts, unknown_parts = [], [], [], [], []
+    small_parts = []
+    if small_comp_ids:
+      # 把微小件 solid 移入 _small 组件
+      import hm.entities as ent
+      hm_mod = get_hm()
+      model = get_model()
+      small_sids = []
+      for scid in small_comp_ids:
+        try:
+          for s in hm_mod.Collection(model, hm_mod.FilterByCollection(ent.Solid, ent.Component),
+                                     hm_mod.Collection(model, hm_mod.FilterByEnumeration(ent.Component, ids=[int(scid)]))):
+            small_sids.append(int(s.id))
+        except Exception:
+          pass
+      if small_sids:
+        small_cid = api_move_solids_to_new_component("_small", small_sids)
+        small_parts.append(PartInfo(
+          comp_id=small_cid, name="_small", thickness=0, category="small",
+        ))
 
-    for p in all_parts:
-      p = self._classify_part(p)
-      self._results[p.comp_id] = p
-
-      if p.category == "thin":
-        thin_parts.append(p)
-      elif p.category == "small":
-        small_parts.append(p)
-      elif p.category == "mid_thick":
-        mid_thick_parts.append(p)
-      elif p.category == "thick":
-        thick_parts.append(p)
-      else:
-        unknown_parts.append(p)
-
+    # ---- Step 6: 构建结果 ----
     result = ClassifyResult(
-      success=len(thin_parts) + len(thick_parts) > 0,
+      success=len(thin_parts) + len(mid_thick_parts) + len(thick_parts) > 0,
       thin_parts=thin_parts,
       small_parts=small_parts,
       mid_thick_parts=mid_thick_parts,
       thick_parts=thick_parts,
-      unknown_parts=unknown_parts,
       message=(
-        f"分类完成: 薄壁 {len(thin_parts)} /"
+        f"分组完成: 薄壁 {len(thin_parts)} 组 /"
         f" 微小 {len(small_parts)} /"
-        f" 中厚 {len(mid_thick_parts)} /"
-        f" 厚实体 {len(thick_parts)} /"
-        f" 未知 {len(unknown_parts)}"
+        f" 中厚 {len(mid_thick_parts)} 组 /"
+        f" 厚实体 {len(thick_parts)} 组"
       ),
     )
 
     self._result = result
-    logger.info("")
     logger.info(result.message)
-    logger.info("===== 三维零件分类完成 =====")
+    logger.info("===== 按厚度分组分类完成 =====")
     return result
-
-  def get_part_info(self, comp_id: int) -> Optional[PartInfo]:
-    return self._results.get(comp_id)
 
   def delete_small_parts(self) -> list:
     """删除所有微小件，返回已删除的 comp_id 列表"""
-    if not self._result:
+    if not self._result or not self._result.small_parts:
       return []
     deleted = []
     for p in self._result.small_parts:
@@ -232,66 +241,7 @@ class GeometryClassifier:
           model.delete(comp)
           deleted.append(p.comp_id)
           logger.info(f"已删除微小件: {p.name} (comp_id={p.comp_id})")
-        else:
-          logger.warn(f"无法删除 {p.comp_id}: 无 HM Model")
       except Exception as e:
         logger.error(f"删除 {p.comp_id} 失败: {e}")
     logger.info(f"删除微小件: {len(deleted)} 个")
     return deleted
-
-  def organize_parts(self) -> dict:
-    """按分类结果创建 Part 体系：
-    创建三个顶层 Part Assembly:
-      _薄壁件_shell → 每个薄壁零件创建一个子 Part，存放原始 Solid
-      _微小件_small → 每个微小零件创建一个子 Part
-      _实体件_solid → 每个厚实体零件创建一个子 Part
-    返回: {"thin": top_part_id, "small": top_part_id, "thick": top_part_id}
-    """
-    if not self._result:
-      logger.warn("请先运行 classify()")
-      return {}
-
-    from utils.logger import logger
-
-    hm_mod = get_hm()
-    model = get_model()
-    try:
-      import hm.entities as ent
-    except ImportError:
-      ent = hm_mod.entities
-
-    category_config = {
-      "thin":  ("_薄壁件_shell", self._result.thin_parts),
-      "small": ("_微小件_small", self._result.small_parts),
-      "mid_thick": ("_中厚件_hex", self._result.mid_thick_parts),
-      "thick": ("_实体件_solid", self._result.thick_parts),
-    }
-
-    created = {}
-
-    for key, (top_name, parts) in category_config.items():
-      if not parts:
-        continue
-
-      try:
-        # Step 1: 创建顶层 Part Assembly
-        top_part = ent.Part(model)
-        top_part.name = top_name
-        created[key] = int(top_part.id)
-        model.ME_ModuleOccurrenceConvert(part_entity=top_part, type="assembly", reserved="")
-
-        # Step 2: 为每个零件创建子 Part，把 Solid 移进去
-        for p in parts:
-          cid = int(p.comp_id)
-          child_name = p.name if p.name else f"part_{cid}"
-
-          # 用 ME_ModuleOccurrenceCreate 在顶层 Part 下创建子 Part
-          model.ME_ModuleOccurrenceCreate(
-            name=child_name, parent_part_entity=top_part, structural_type="part",
-          )
-
-        logger.info(f"Part 分组完成: {len(parts)} 个 → '{top_name}' (Part_{top_part.id})")
-      except Exception as e:
-        logger.error(f"Part 分组失败 ({top_name}): {e}")
-
-    return created

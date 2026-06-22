@@ -41,6 +41,7 @@ from utils.hw_api import (
   api_stitch_free_edges, api_equivalence,
   api_batchmesh2, api_tetmesh, api_elemoffset_thinsolid, exec_tcl, get_model_name,
   api_diag_thickness, api_get_solid_thickness,
+  get_hm, get_model,
 )
 
 logger.info("===== 叉车建模工具已加载 =====")
@@ -129,6 +130,19 @@ def cls(): api_clear_all(); print("已清理")
 
 _classify_result = None
 
+def _count_solids(comp_id):
+  """统计组件内 solid 数量"""
+  try:
+    hm_mod = get_hm()
+    model = get_model()
+    import hm.entities as ent
+    comp_sel = hm_mod.Collection(model, hm_mod.FilterByEnumeration(ent.Component, ids=[int(comp_id)]))
+    solid_col = hm_mod.Collection(model, hm_mod.FilterByCollection(ent.Solid, ent.Component), comp_sel)
+    return len(solid_col)
+  except:
+    return 0
+
+
 def classify(show_details=False):
   """三维零件分类: classify() 简要 / classify(True) 详细列表"""
   global _classify_result
@@ -138,30 +152,21 @@ def classify(show_details=False):
   _classify_result = result
   if result.success:
     print(f"\n{'='*60}")
-    print(f"  薄壁件(壳网格):     {len(result.thin_parts)} 个")
-    print(f"  微小件(可删除):     {len(result.small_parts)} 个")
-    print(f"  中厚件(六面体3层):  {len(result.mid_thick_parts)} 个")
-    print(f"  厚实体(六面体t/5层): {len(result.thick_parts)} 个")
+    print(f"  薄壁件组(T{thk}_shell): {len(result.thin_parts)} 组")
+    for p in result.thin_parts:
+      n_solids = _count_solids(p.comp_id)
+      print(f"    {p.name}: {n_solids}个实体")
+    print(f"  中厚件组(T{thk}_solid): {len(result.mid_thick_parts)} 组")
+    for p in result.mid_thick_parts:
+      n_solids = _count_solids(p.comp_id)
+      print(f"    {p.name}: {n_solids}个实体")
+    print(f"  厚实体组(T{thk}_solid): {len(result.thick_parts)} 组")
+    for p in result.thick_parts:
+      n_solids = _count_solids(p.comp_id)
+      print(f"    {p.name}: {n_solids}个实体")
+    print(f"  微小件: {len(result.small_parts)} 组")
     print(f"{'='*60}")
-    if show_details:
-      for label, parts in [
-        ("薄壁件_壳网格", result.thin_parts),
-        ("微小件_可忽略", result.small_parts),
-        ("中厚件_六面体3层", result.mid_thick_parts),
-        ("厚实体_六面体t/5层", result.thick_parts),
-      ]:
-        if not parts: continue
-        print(f"\n--- {label} ({len(parts)}个) ---")
-        print(f"{'ID':>5}  {'厚度(mm)':>10}  {'体积(mm³)':>14}  {'面积(mm²)':>14}  {'名称'}")
-        for p in parts:
-          thick = api_get_solid_thickness(None, p.comp_id)
-          if thick <= 0 and p.surface_area > 0 and p.volume > 0:
-            thick = 2.0 * p.volume / p.surface_area
-          if thick <= 0:
-            thick = sorted(p.bbox_dims)[2] if p.bbox_dims else 0
-          print(f"{p.comp_id:>5}  {thick:>10.1f}  {p.volume:>14.0f}  {p.surface_area:>14.0f}  {p.name}")
-      print()
-    print(f"  下一步: del_small() 删除微小件 → batchmesh()(薄壁) + solid_mesh()(中厚/厚六面体)")
+    print(f"\n  下一步: del_small() 删除微小件 → batchmesh()(薄壁) + solid_mesh()(中厚/厚)")
     print(f"  手动纠正: move_to_thick(*ids) 或 move_to_thin(*ids)")
   return c
 
@@ -219,9 +224,6 @@ def del_small():
   c = GeometryClassifier()
   if _classify_result:
     c._result = _classify_result
-    c._results = {p.comp_id: p for p in
-      _classify_result.thin_parts + _classify_result.small_parts +
-      _classify_result.mid_thick_parts + _classify_result.thick_parts}
     deleted = c.delete_small_parts()
   else:
     result = c.run()
@@ -238,7 +240,7 @@ def batchmesh(size=5.0):
   if _classify_result is None: print("请先运行 classify()"); return
   thin_ids = [int(p.comp_id) for p in _classify_result.thin_parts]
   if not thin_ids: print("没有薄壁件"); return
-  print(f"BatchMesher 壳网格: {len(thin_ids)} 个薄壁件 → midmesh")
+  print(f"BatchMesher 壳网格: {len(thin_ids)} 组薄壁件(T厚_shell) → midmesh")
   api_batchmesh2(None, thin_ids, elem_size=size, param_mode="midmesh")
   print(f"壳网格完成: size={size}mm")
 

@@ -365,24 +365,32 @@ def api_group_solids_by_thickness(session=None) -> dict:
 
 
 def api_move_solids_to_new_component(comp_name: str, solid_ids: list) -> int:
-  """创建新 Component 并将指定 Solid 移入，返回新 comp_id"""
+  """创建新 Component 并将指定 Solid 移入，返回新 comp_id
+
+  用 Tcl 命令实现: *collectorcreate → *createmark → *movemark
+  """
+  ids_str = " ".join(str(int(s)) for s in solid_ids)
+  exec_tcl(
+    f"*collectorcreate components \"{comp_name}\" \"\" 11; "
+    f"*createmark solids 1 {ids_str}; "
+    f"*movemark solids 1 \"{comp_name}\""
+  )
+
+  # 获取新创建 component 的 ID
   hm_mod = get_hm()
   model = get_model()
   try:
     import hm.entities as ent
   except ImportError:
     ent = hm_mod.entities
-
-  comp = ent.Component(model)
-  comp.name = comp_name
-  cid = int(comp.id)
-
-  # movemark: 把 solids 从原组件移动到新组件
-  solid_col = hm_mod.Collection(model, hm_mod.FilterByEnumeration(ent.Solid, [int(s) for s in solid_ids]))
-  model.movemark(collection=solid_col, name=comp_name)
-
-  logger.info(f"创建组件 '{comp_name}' (id={cid}), 移入 {len(solid_ids)} 个 Solid")
-  return cid
+  try:
+    comp = model.get(ent.Component, f'name="{comp_name}"')
+    cid = int(comp.id)
+    from utils.logger import logger
+    logger.info(f"创建组件 '{comp_name}' (id={cid}), 移入 {len(solid_ids)} 个 Solid")
+    return cid
+  except Exception:
+    return 0
 
 
 # ===================== 中面抽取 =====================

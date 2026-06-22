@@ -184,9 +184,7 @@ class GeometryClassifier:
         thickness=float(t_key), category="thick",
       ))
 
-    # ---- Step 4: 删除现已为空的原始组件 ----
-    all_cids_str = " ".join(str(int(c)) for c in comp_ids)
-    exec_tcl_quiet(f"*createmark comps 777 {all_cids_str}; *deletemark comps 777")
+    # ---- Step 4: 跳过删除旧组件（solid 已移走，旧组件可能有残留曲面需用户手动清理）----
 
     # ---- Step 5: 检测微小件（跳过 _others, _small）----
     skip_names = {"_others", "_small"}

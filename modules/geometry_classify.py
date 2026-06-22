@@ -21,8 +21,6 @@ from utils.hw_api import (
   api_get_solid_thickness,
   api_group_solids_by_thickness,
   api_move_solids_to_new_component,
-  exec_tcl,
-  exec_tcl_quiet,
   get_hm,
   get_model,
 )

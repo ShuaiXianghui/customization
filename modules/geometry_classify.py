@@ -188,9 +188,10 @@ class GeometryClassifier:
     all_cids_str = " ".join(str(int(c)) for c in comp_ids)
     exec_tcl_quiet(f"*createmark comps 777 {all_cids_str}; *deletemark comps 777")
 
-    # ---- Step 5: 检测微小件（跳过 _others）----
+    # ---- Step 5: 检测微小件（跳过 _others, _small）----
+    skip_names = {"_others", "_small"}
     remaining = [c for c in api_get_component_list(self.session)
-                 if api_get_component_name(self.session, c) != "_others"]
+                 if api_get_component_name(self.session, c) not in skip_names]
     small_comp_ids = self._detect_small_solids(remaining)
 
     small_parts = []
